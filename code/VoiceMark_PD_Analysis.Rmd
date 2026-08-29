@@ -1,0 +1,3624 @@
+---
+title: "VoiceMark PD"
+subtitle: "Leakage-Aware Machine Learning for Parkinson's Classification from Acoustic Voice Biomarkers"
+author: "Kenechukwu O. S. Nwosu"
+date: "2026-08-17"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+    theme: flatly
+    df_print: paged
+---
+
+
+
+*VoiceMark PD is a reproducible machine-learning project examining whether acoustic characteristics extracted from sustained voice recordings can distinguish people with Parkinson's disease (PD) from healthy controls.*
+
+*The project also investigates an important problem in biomedical machine learning: information leakage caused by treating repeated measurements from the same participant as independent observations.*
+
+*Each participant in this dataset contributed three voice recordings. If recordings from the same person are distributed across both model-training and validation folds, a model may partly learn participant-specific voice characteristics rather than patterns that generalize to genuinely unseen patients.*
+
+*VoiceMark PD therefore rebuilds an earlier machine-learning analysis using participant-grouped validation, ensuring that all recordings belonging to one person remain together throughout resampling.*
+
+*Core methodological question:*
+
+##### How much does apparent machine-learning performance change when repeated voice recordings are evaluated at the participant level rather than as independent observations?
+
+
+
+### Background
+
+*Parkinson's disease is a progressive neurodegenerative disorder characterized by motor and non-motor manifestations. Alterations in voice and speech—including abnormalities in phonation, pitch stability, amplitude, vocal-fold vibration, and acoustic complexity—are common in PD and have motivated research into non-invasive voice-based screening and telemonitoring systems.*
+
+*Machine-learning models can use hundreds of acoustic measurements to distinguish PD-associated voice patterns from those of healthy controls. However, repeated voice recordings create a methodological challenge.*
+
+*If three recordings from one participant are randomly separated across training and validation sets, the validation data are not completely independent of the training data. This can produce overly optimistic estimates of model discrimination.*
+
+*VoiceMark PD was therefore developed as a methodologically corrected reproduction emphasizing participant-level independence, reproducible preprocessing, leakage-aware validation, and participant-level prediction.*
+
+
+
+### Study Objective
+
+*The primary objectives were to:*
+
+- *1.) Develop and compare machine-learning models for PD classification using acoustic voice features.*
+- *2.) Preserve all repeated recordings from the same participant within the same resampling partition.*
+- *3.) Quantify the degree to which conventional recording-level cross-validation inflates apparent model performance.*
+- *4.) Evaluate trained models on a held-out set of completely unseen participants.*
+- *5.) Compare discrimination, class-specific performance, and probability-based metrics rather than accuracy alone.*
+- *6.) Use model-agnostic explainability methods to investigate the acoustic features contributing most strongly to prediction.*
+- *7.) Build a reproducible R workflow suitable for GitHub, scientific presentation, and further methodological development.*
+
+
+
+### Methods
+
+#### Data Source and Study Population
+
+*Data were obtained from the UCI Parkinson's Disease Classification dataset.*
+
+*The complete dataset contained:*
+
+- *252 independent participants*
+- *756 sustained-vowel voice recordings*
+- *3 recordings per participant*
+- *188 participants with PD (74.6%)*
+- *64 healthy controls (25.4%)*
+- *Approximately 753 acoustic predictor variables*
+
+*The acoustic predictors represented several feature families, including conventional dysphonia measures, intensity and formant characteristics, Mel-frequency cepstral coefficients (MFCCs), wavelet-derived features, vocal-fold features, and tunable Q-factor wavelet transform (TQWT) features.*
+
+
+
+#### Package Installation.
+
+*The analysis was implemented in R using the following project dependencies:*
+
+
+-
+```{r install-packages, eval=FALSE}
+install.packages(c(
+  "GPfit",
+  "tidyverse",
+  "tidymodels",
+  "skimr",
+  "janitor",
+  "here",
+  "patchwork",
+  "DALEX",
+  "DALEXtra",
+  "corrplot",
+  "kableExtra",
+  "scales",
+  "themis",
+  "ranger",
+  "kernlab",
+  "xgboost",
+  "kknn"
+))
+```
+
+
+
+
+*The workflow primarily uses:*
+
+- *tidyverse for data manipulation and visualization;*
+- *tidymodels for preprocessing, resampling, tuning, and modeling;*
+- *glmnet through tidymodels for penalized regression;*
+- *kernlab for support-vector machines;*
+- *ranger for random forests;*
+- *xgboost for gradient boosting;*
+- *kknn for nearest-neighbor modeling; and*
+- *DALEX/DALEXtra for model-agnostic interpretation.*
+
+
+
+#### Project Setup: packages, figure settings, reproducibility.
+
+*All primary analyses were conducted using a reproducible R Markdown workflow.*
+
+
+-
+```{r project-setup}
+
+# ============================================================
+# LOAD PACKAGES
+# ============================================================
+
+library(GPfit)
+library(tidyverse)
+library(tidymodels)
+library(skimr)
+library(janitor)
+library(here)
+library(patchwork)
+library(DALEX)
+library(DALEXtra)
+library(corrplot)
+library(kableExtra)
+library(scales)
+library(themis)
+library(ranger)
+library(kernlab)
+library(xgboost)
+library(kknn)
+
+
+# Tell R to prefer tidymodels functions when packages
+# contain functions with the same name.
+tidymodels_prefer()
+
+
+# ============================================================
+# R MARKDOWN DISPLAY SETTINGS
+# ============================================================
+
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 9,
+  fig.height = 6,
+  dpi = 300
+)
+
+
+# ============================================================
+# REPRODUCIBILITY
+# ============================================================
+
+set.seed(2026)
+
+
+# ============================================================
+# FAST MODE
+# ============================================================
+# TRUE  = quicker trial run while debugging code
+# FALSE = more thorough FINAL analysis
+#
+# Start with TRUE.
+# After everything works, change it to FALSE and rerun.
+
+FAST_MODE <- FALSE
+
+cv_repeats <- ifelse(FAST_MODE, 1, 5)
+small_grid  <- ifelse(FAST_MODE, 8, 20)
+large_grid  <- ifelse(FAST_MODE, 10, 30)
+
+cat("FAST_MODE:", FAST_MODE, "\n")
+cat("Cross-validation repeats:", cv_repeats, "\n")
+cat("Small tuning grid:", small_grid, "\n")
+cat("Large tuning grid:", large_grid, "\n")
+
+```
+
+
+
+
+*For the definitive analysis:*
+
+- *FAST_MODE = FALSE*
+- *random seed = 2026*
+- *cross-validation repetitions = 5*
+- *larger tuning grids were used than during development/debugging.*
+
+
+
+#### Data Import and Quality Control.
+
+*The source dataset was imported directly into R and variable names were standardized.*
+
+*Quality-control procedures evaluated:*
+
+- *dataset dimensions;*
+- *variable names and data types;*
+- *missingness;*
+- *participant identifiers;*
+- *consistency of disease (PD) status within participants;*
+- *number of recordings contributed by each participant;*
+- *exact duplicate observations;*
+- *outcome/class distribution; and*
+- *repeated-measures structure.*
+
+*Participant ID was preserved because it was required for grouped splitting and resampling, but it was not permitted to act as a predictive feature.*
+
+*Disease status was coded with PD as the positive event class.*
+
+*The analysis confirmed that the 756 observations represented:*
+
+##### 252 participants × 3 recordings each
+
+*rather than 756 independent participants.*
+
+
+-
+```{r import-clean-audit}
+
+# ============================================================
+# 1. IMPORT DATA
+# ============================================================
+
+pd_raw <- read_csv(
+  here("data", "pd_speech_features.csv"),
+  show_col_types = FALSE
+)
+
+
+# ============================================================
+# 2. BASIC CHECKS BEFORE CLEANING
+# ============================================================
+
+# Number of rows and columns
+dim(pd_raw)
+
+# First 20 column names
+names(pd_raw)[1:20]
+
+# Last 16 column names
+names(pd_raw)[740:755]
+
+
+# ============================================================
+# 3. CLEAN VARIABLE NAMES
+# ============================================================
+
+pd <- pd_raw |>
+  clean_names()
+
+
+# ============================================================
+# 4. INSPECT DATA STRUCTURE
+# ============================================================
+
+glimpse(pd)
+
+skim(pd)
+
+
+# ============================================================
+# 5. CHECK FOR MISSING VALUES
+# ============================================================
+
+total_missing <- sum(is.na(pd))
+
+total_missing
+
+
+# ============================================================
+# 6. CHECK THE IMPORTANT VARIABLES
+# ============================================================
+
+pd |>
+  select(id, gender, class) |>
+  head(12)
+
+
+# ============================================================
+# 7. CONVERT ID AND OUTCOME TO FACTORS
+# ============================================================
+#
+# IMPORTANT:
+# We deliberately put PD FIRST.
+#
+# In tidymodels/yardstick, the first factor level is normally
+# treated as the event/positive outcome.
+#
+# Therefore:
+# 1 = PD
+# 0 = Normal
+
+pd <- pd |>
+  mutate(
+    id = factor(id),
+
+    class = factor(
+      class,
+      levels = c(1, 0),
+      labels = c("PD", "Normal")
+    )
+  )
+
+
+# ============================================================
+# 8. COUNT RECORDINGS AND PARTICIPANTS
+# ============================================================
+
+number_recordings <- nrow(pd)
+
+number_participants <- n_distinct(pd$id)
+
+recordings_per_participant <-
+  number_recordings / number_participants
+
+number_recordings
+number_participants
+recordings_per_participant
+
+
+# ============================================================
+# 9. VERIFY NUMBER OF RECORDINGS PER PARTICIPANT
+# ============================================================
+
+recordings_check <- pd |>
+  count(id, name = "recordings_per_subject") |>
+  count(recordings_per_subject, name = "number_of_subjects")
+
+recordings_check
+
+
+# ============================================================
+# 10. VERIFY EACH PARTICIPANT HAS ONE DISEASE STATUS
+# ============================================================
+
+class_consistency <- pd |>
+  group_by(id) |>
+  summarise(
+    number_of_classes = n_distinct(class),
+    .groups = "drop"
+  ) |>
+  count(number_of_classes)
+
+class_consistency
+
+
+# ============================================================
+# 11. CHECK FOR EXACT DUPLICATE ROWS
+# ============================================================
+
+duplicate_rows <- pd |>
+  duplicated() |>
+  sum()
+
+duplicate_rows
+
+
+# ============================================================
+# 12. CREATE ONE-ROW-PER-PARTICIPANT DATASET
+# ============================================================
+#
+# This is for descriptive statistics only.
+# We are NOT throwing away the other recordings for modeling.
+
+subject_data <- pd |>
+  distinct(id, class, .keep_all = TRUE)
+
+
+# ============================================================
+# 13. PARTICIPANT-LEVEL CLASS DISTRIBUTION
+# ============================================================
+
+subject_class_table <- subject_data |>
+  count(class) |>
+  mutate(
+    percent = n / sum(n) * 100
+  )
+
+subject_class_table
+
+```
+
+
+
+
+#### Exploratory Data Analysis.
+
+*Pt the participant level:*
+
+- *188/252 (74.6%) had PD.*
+- *64/252 (25.4%) were healthy controls.*
+
+*This imbalance meant that accuracy alone would be insufficient for evaluating model quality. Accordingly, the analysis incorporated ROC-AUC, PR-AUC, balanced accuracy, sensitivity, specificity, F1 score, Cohen's kappa, and Matthews correlation coefficient.*
+
+*The repeated-recording structure was visualized explicitly to show why participant ID had to be preserved during resampling.*
+
+
+#### Repeated-Measures Problem.
+
+*Every participant contributed three recordings.*
+
+*A conventional row-wise cross-validation algorithm can therefore produce a structure such as:*
+
+##### Training set
+
+*Participant A — Recording 1*
+*Participant A — Recording 2*
+
+##### Validation set
+
+*Participant A — Recording 3*
+
+*Although Recording 3 itself was not used for training, the model has already encountered acoustic data from Participant A.*
+
+*Consequently, validation performance can partly reflect recognition of participant-specific voice characteristics rather than true generalization to a new person.*
+
+*For a clinically relevant classification task, all recordings from a participant should therefore remain together.*
+
+
+-
+```{r exploratory-visualizations}
+
+# ============================================================
+# FIGURE 1:
+# STUDY POPULATION
+# ============================================================
+
+class_plot <- subject_data |>
+  count(class) |>
+  mutate(
+    proportion = n / sum(n),
+
+    label = paste0(
+      n,
+      "\n(",
+      scales::percent(
+        proportion,
+        accuracy = 0.1
+      ),
+      ")"
+    )
+  ) |>
+  ggplot(
+    aes(
+      x = class,
+      y = n,
+      fill = class
+    )
+  ) +
+
+  # Create one bar for each disease-status group
+  geom_col(
+    width = 0.65,
+    show.legend = FALSE
+  ) +
+
+  # Use the same disease-status palette throughout
+  # all VoiceMark-PD figures.
+  scale_fill_manual(
+    values = c(
+      "PD" = "#E76F51",
+      "Normal" = "#2A9D8F"
+    )
+  ) +
+
+  # Place participant count and percentage
+  # inside and near the top of each bar.
+  geom_text(
+    aes(
+      label = label,
+      y = n
+    ),
+    vjust = 1.4,
+    color = "white",
+    size = 5,
+    fontface = "bold"
+  ) +
+
+  labs(
+    title =
+      "Study Population by Parkinson's Disease Status",
+
+    subtitle =
+      "252 independent participants contributed three voice recordings each",
+
+    x = NULL,
+
+    y =
+      "Number of participants",
+
+    caption =
+      "UCI Parkinson's Disease Classification dataset"
+  ) +
+
+  theme_minimal(
+    base_size = 14
+  ) +
+
+  theme(
+    plot.title =
+      element_text(
+        face = "bold",
+        size = 18
+      ),
+
+    plot.subtitle =
+      element_text(
+        size = 13
+      ),
+
+    axis.title.y =
+      element_text(
+        face = "bold"
+      ),
+
+    axis.text.x =
+      element_text(
+        size = 12
+      ),
+
+    # Vertical gridlines add nothing to a two-bar chart.
+    panel.grid.major.x =
+      element_blank(),
+
+    panel.grid.minor.x =
+      element_blank(),
+
+    plot.caption =
+      element_text(
+        size = 10,
+        hjust = 1
+      )
+  )
+
+
+class_plot
+
+
+# Save high-resolution figure
+ggsave(
+  filename = here(
+    "figures",
+    "01_study_population.png"
+  ),
+  plot = class_plot,
+  width = 8,
+  height = 6,
+  dpi = 300
+)
+
+
+# ============================================================
+# FIGURE 2:
+# REPEATED-MEASURES DESIGN
+# ============================================================
+
+# Select an illustrative subset containing equal numbers
+# of PD and Normal participants.
+#
+# This DOES NOT imply that the complete dataset is balanced.
+# It simply makes the repeated-measures structure easier
+# to understand visually.
+
+example_ids <- subject_data |>
+  group_by(class) |>
+  slice_head(
+    n = 6
+  ) |>
+  ungroup() |>
+  pull(id)
+
+
+# Retrieve all three recordings belonging to
+# each selected participant.
+
+example_subjects <- pd |>
+  filter(
+    id %in% example_ids
+  ) |>
+  group_by(id) |>
+  mutate(
+    recording =
+      row_number()
+  ) |>
+  ungroup()
+
+
+# ============================================================
+# CREATE ORDERED PARTICIPANT LABELS
+# ============================================================
+
+# Reorder participants so that they appear cleanly
+# in the figure rather than depending on the original
+# numeric ID ordering.
+
+example_subjects <- example_subjects |>
+  mutate(
+    id =
+      factor(
+        id,
+        levels =
+          example_ids
+      )
+  )
+
+
+# ============================================================
+# CREATE REPEATED-MEASURES PLOT
+# ============================================================
+
+recording_plot <- example_subjects |>
+  ggplot(
+    aes(
+      x = recording,
+      y = id,
+      group = id
+    )
+  ) +
+
+  # Connecting lines indicate that the three observations
+  # belong to the same participant.
+  #
+  # Keep these subdued because the disease-status encoding
+  # should remain visually dominant.
+  geom_line(
+    linewidth = 0.7,
+    color = "#7A7A7A",
+    alpha = 0.60
+  ) +
+
+  # Encode disease status using BOTH color and shape.
+  # Shape preserves differentiation if the figure is
+  # printed in grayscale or viewed by someone with
+  # impaired color discrimination.
+  geom_point(
+    aes(
+      color = class,
+      shape = class
+    ),
+    size = 4.5
+  ) +
+
+  # Consistent project disease-status palette.
+  scale_color_manual(
+    values = c(
+      "PD" = "#E76F51",
+      "Normal" = "#2A9D8F"
+    )
+  ) +
+
+  # Explicitly preserve different point shapes.
+  scale_shape_manual(
+    values = c(
+      "PD" = 16,
+      "Normal" = 17
+    )
+  ) +
+
+  scale_x_continuous(
+    breaks = 1:3,
+    labels = c(
+      "Recording 1",
+      "Recording 2",
+      "Recording 3"
+    )
+  ) +
+
+  labs(
+    title =
+      "Three Voice Recordings Belong to Each Participant",
+
+    subtitle =
+      "Illustrative subset of 6 PD and 6 Normal participants; each contributed three recordings",
+
+    x = NULL,
+
+    y =
+      "Participant ID",
+
+    color =
+      "Disease status",
+
+    shape =
+      "Disease status",
+
+    caption =
+      "Repeated recordings from the same participant are correlated and must remain grouped during model validation."
+  ) +
+
+  theme_minimal(
+    base_size = 13
+  ) +
+
+  theme(
+    plot.title =
+      element_text(
+        face = "bold",
+        size = 18
+      ),
+
+    plot.subtitle =
+      element_text(
+        size = 13
+      ),
+
+    axis.title.y =
+      element_text(
+        face = "bold"
+      ),
+
+    axis.text.x =
+      element_text(
+        size = 12
+      ),
+
+    axis.text.y =
+      element_text(
+        size = 11
+      ),
+
+    # Vertical gridlines are useful because they help
+    # trace each participant across recordings.
+    panel.grid.minor.x =
+      element_blank(),
+
+    # Horizontal major gridlines help distinguish subjects.
+    panel.grid.minor.y =
+      element_blank(),
+
+    legend.position =
+      "right",
+
+    plot.caption =
+      element_text(
+        size = 10,
+        hjust = 0
+      )
+  )
+
+
+recording_plot
+
+
+# Save high-resolution figure
+ggsave(
+  filename = here(
+    "figures",
+    "02_repeated_measures_design.png"
+  ),
+  plot = recording_plot,
+  width = 9,
+  height = 6,
+  dpi = 300
+)
+
+```
+
+
+
+
+#### Leakage-Aware Study Design: Train/test split, leakage comparison folds and pre-processing recipe.
+
+*A participant-grouped stratified split was used to create development and held-out samples.*
+
+| Dataset	| Voice recordings	| Independent participants |
+|:-------|:------|:------|
+|Training | 603 | 201|
+|Held-out testing | 153 | 51|
+
+
+*No participant appeared in both datasets.*
+
+*Within the 201-participant training sample, model development used:*
+
+##### 5-fold participant-grouped cross-validation repeated 5 times
+
+*This produced 25 grouped resamples, with all recordings from an individual remaining within the same assessment or analysis partition.*
+
+*The primary preprocessing recipe:*
+
+- *retained participant ID exclusively as a grouping identifier;*
+- *excluded gender from the primary voice-only model;*
+- *removed zero-variance predictors; and*
+- *normalized numeric predictors.*
+
+*Critically, preprocessing was incorporated into the modeling workflow so that preprocessing quantities were learned from training data within resampling rather than from the full dataset.*
+
+
+-
+```{r splitting-resampling-preprocessing}
+
+# ============================================================
+# 1. SUBJECT-GROUPED TRAIN/TEST SPLIT
+# ============================================================
+#
+# Approximately 80% of PARTICIPANTS go to training.
+# Approximately 20% go to testing.
+#
+# All 3 recordings from a participant stay together.
+
+set.seed(2026)
+
+pd_split <- group_initial_split(
+  pd,
+  group = id,
+  prop = 0.80,
+  strata = class
+)
+
+
+train_data <- training(pd_split)
+
+test_data <- testing(pd_split)
+
+
+# ============================================================
+# 2. VERIFY ZERO PARTICIPANT OVERLAP
+# ============================================================
+
+participant_overlap <- intersect(
+  unique(train_data$id),
+  unique(test_data$id)
+)
+
+participant_overlap
+
+
+# ============================================================
+# 3. DISPLAY SPLIT SIZE
+# ============================================================
+
+split_summary <- tibble(
+  dataset = c(
+    "Training",
+    "Testing"
+  ),
+
+  recordings = c(
+    nrow(train_data),
+    nrow(test_data)
+  ),
+
+  participants = c(
+    n_distinct(train_data$id),
+    n_distinct(test_data$id)
+  )
+)
+
+split_summary
+
+
+# ============================================================
+# 4. NAIVE RECORDING-LEVEL CROSS-VALIDATION
+# ============================================================
+#
+# This deliberately reproduces the problematic approach.
+# Individual recordings are randomly divided.
+#
+# We use this ONLY for the leakage demonstration.
+
+set.seed(2026)
+
+naive_folds <- vfold_cv(
+  train_data,
+  v = 5,
+  repeats = cv_repeats,
+  strata = class
+)
+
+
+# ============================================================
+# 5. CORRECT SUBJECT-GROUPED CROSS-VALIDATION
+# ============================================================
+#
+# All recordings from the same participant stay together.
+
+set.seed(2026)
+
+grouped_folds <- group_vfold_cv(
+  train_data,
+  group = id,
+  v = 5,
+  repeats = cv_repeats,
+  strata = class
+)
+
+
+# ============================================================
+# 6. PREPROCESSING RECIPE
+# ============================================================
+#
+# class = outcome
+# id    = identifier/grouping variable, NOT predictor
+# gender = removed from PRIMARY voice-only analysis
+#
+# step_zv removes predictors with zero variance.
+#
+# step_normalize:
+# subtracts the training mean
+# and divides by the training standard deviation.
+
+pd_recipe <- recipe(
+  class ~ .,
+  data = train_data
+) |>
+  update_role(
+    id,
+    new_role = "subject_id"
+  ) |>
+  step_rm(gender) |>
+  step_zv(all_predictors()) |>
+  step_normalize(
+    all_numeric_predictors()
+  )
+
+
+# View recipe
+pd_recipe
+
+```
+
+
+
+
+#### Machine-Learning Methods: Define the evaluation metrics and all six models.
+
+*Six modeling approaches were compared:*
+
+*1.) Penalized logistic regression*
+*2.) K-nearest neighbors (KNN)*
+*3.) Linear support vector machine*
+*5.) Random forest*
+*6.) XGBoost gradient boosting*
+
+*The models represented a deliberately diverse set of linear, regularized, distance-based, kernel-based, bagged-tree, and boosted-tree methods.*
+
+*Performance was assessed using:*
+
+- *ROC-AUC*
+- *Precision-recall AUC*
+- *Accuracy*
+- *Balanced accuracy*
+- *Sensitivity*
+- *Specificity*
+- *F1 score*
+- *Cohen's kappa*
+- *Matthews correlation coefficient*
+
+
+-
+```{r define-models}
+
+# ============================================================
+# PERFORMANCE METRICS
+# ============================================================
+
+pd_metrics <- metric_set(
+  roc_auc,
+  pr_auc,
+  accuracy,
+  bal_accuracy,
+  sens,
+  spec,
+  f_meas,
+  kap,
+  mcc
+)
+
+
+# ============================================================
+# MODEL 1:
+# PENALIZED LOGISTIC REGRESSION
+# ============================================================
+#
+# mixture:
+# 0 = Ridge
+# 1 = Lasso
+# between 0 and 1 = Elastic Net
+
+glmnet_spec <- logistic_reg(
+  penalty = tune(),
+  mixture = tune()
+) |>
+  set_engine("glmnet") |>
+  set_mode("classification")
+
+
+glmnet_workflow <- workflow() |>
+  add_recipe(pd_recipe) |>
+  add_model(glmnet_spec)
+
+
+# ============================================================
+# MODEL 2:
+# K-NEAREST NEIGHBORS
+# ============================================================
+
+knn_spec <- nearest_neighbor(
+  neighbors = tune(),
+  weight_func = tune(),
+  dist_power = tune()
+) |>
+  set_engine("kknn") |>
+  set_mode("classification")
+
+
+knn_workflow <- workflow() |>
+  add_recipe(pd_recipe) |>
+  add_model(knn_spec)
+
+
+# ============================================================
+# MODEL 3:
+# LINEAR SUPPORT VECTOR MACHINE
+# ============================================================
+
+svm_linear_spec <- svm_linear(
+  cost = tune()
+) |>
+  set_engine("kernlab") |>
+  set_mode("classification")
+
+
+svm_linear_workflow <- workflow() |>
+  add_recipe(pd_recipe) |>
+  add_model(svm_linear_spec)
+
+
+# ============================================================
+# MODEL 4:
+# RADIAL SUPPORT VECTOR MACHINE
+# ============================================================
+
+svm_rbf_spec <- svm_rbf(
+  cost = tune(),
+  rbf_sigma = tune()
+) |>
+  set_engine("kernlab") |>
+  set_mode("classification")
+
+
+svm_rbf_workflow <- workflow() |>
+  add_recipe(pd_recipe) |>
+  add_model(svm_rbf_spec)
+
+
+# ============================================================
+# MODEL 5:
+# RANDOM FOREST
+# ============================================================
+
+rf_spec <- rand_forest(
+  mtry = tune(),
+  trees = tune(),
+  min_n = tune()
+) |>
+  set_engine(
+    "ranger",
+    importance = "permutation",
+    probability = TRUE
+  ) |>
+  set_mode("classification")
+
+
+rf_workflow <- workflow() |>
+  add_recipe(pd_recipe) |>
+  add_model(rf_spec)
+
+
+# ============================================================
+# MODEL 6:
+# XGBOOST
+# ============================================================
+
+xgb_spec <- boost_tree(
+  trees = tune(),
+  tree_depth = tune(),
+  learn_rate = tune(),
+  loss_reduction = tune(),
+  min_n = tune(),
+  sample_size = tune(),
+  mtry = tune()
+) |>
+  set_engine("xgboost") |>
+  set_mode("classification")
+
+
+xgb_workflow <- workflow() |>
+  add_recipe(pd_recipe) |>
+  add_model(xgb_spec)
+
+```
+
+
+
+
+#### Model Tuning and Cross-Validation.
+
+*Hyperparameters were tuned entirely within the participant-grouped resampling framework.*
+
+*Because the definitive analysis used FAST_MODE = FALSE, larger tuning grids and five repeated cross-validation cycles were evaluated.*
+
+*The principal model-selection metric was ROC-AUC.*
+
+
+-
+```{r tune-models, cache=FALSE}
+
+# ============================================================
+# CREATE PARAMETER GRIDS
+# ============================================================
+
+set.seed(2026)
+
+
+# ============================================================
+# PENALIZED LOGISTIC REGRESSION
+# ============================================================
+
+glmnet_grid <- grid_regular(
+  penalty(
+    range = c(-5, 1)
+  ),
+  mixture(),
+  levels = c(
+    penalty = 5,
+    mixture = 5
+  )
+)
+
+
+# ============================================================
+# K-NEAREST NEIGHBORS
+# ============================================================
+
+knn_grid <- grid_regular(
+  neighbors(
+    range = c(3L, 35L)
+  ),
+  dist_power(
+    range = c(1, 2)
+  ),
+  weight_func(
+    values = c(
+      "rectangular",
+      "triangular",
+      "epanechnikov",
+      "optimal"
+    )
+  ),
+  levels = c(
+    neighbors = 5,
+    dist_power = 2,
+    weight_func = 1
+  )
+)
+
+
+# ============================================================
+# LINEAR SVM
+# ============================================================
+
+svm_linear_grid <- grid_regular(
+  cost(
+    range = c(-5, 5)
+  ),
+  levels = 10
+)
+
+
+# ============================================================
+# RADIAL SVM
+# ============================================================
+
+svm_rbf_grid <- grid_latin_hypercube(
+  cost(
+    range = c(-5, 5)
+  ),
+  rbf_sigma(
+    range = c(-10, 0)
+  ),
+  size = 12
+)
+
+
+# ============================================================
+# RANDOM FOREST
+# ============================================================
+#
+# finalize() adapts mtry to the number of available
+# predictors in the training data.
+
+rf_grid <- grid_latin_hypercube(
+  finalize(
+    mtry(),
+    train_data |>
+      select(
+        -class,
+        -id
+      )
+  ),
+  min_n(
+    range = c(2L, 30L)
+  ),
+  trees(
+    range = c(500L, 1500L)
+  ),
+  size = 12
+)
+
+
+# ============================================================
+# XGBOOST
+# ============================================================
+
+xgb_grid <- grid_latin_hypercube(
+  trees(
+    range = c(500L, 1500L)
+  ),
+  tree_depth(
+    range = c(2L, 10L)
+  ),
+  learn_rate(
+    range = c(-4, -0.5)
+  ),
+  loss_reduction(),
+  min_n(
+    range = c(2L, 30L)
+  ),
+  sample_prop(
+    range = c(0.5, 1.0)
+  ),
+  finalize(
+    mtry(),
+    train_data |>
+      select(
+        -class,
+        -id
+      )
+  ),
+  size = 15
+)
+
+
+# ============================================================
+# DISPLAY FINAL GRID SIZES
+# ============================================================
+
+nrow(glmnet_grid)
+nrow(knn_grid)
+nrow(svm_linear_grid)
+nrow(svm_rbf_grid)
+nrow(rf_grid)
+nrow(xgb_grid)
+
+
+# ============================================================
+# TUNE PENALIZED LOGISTIC REGRESSION
+# ============================================================
+
+set.seed(2026)
+
+glmnet_results <- tune_grid(
+  glmnet_workflow,
+  resamples = grouped_folds,
+  grid = glmnet_grid,
+  metrics = pd_metrics,
+  control = control_grid(
+    save_pred = TRUE,
+    verbose = TRUE
+  )
+)
+
+
+# ============================================================
+# TUNE KNN
+# ============================================================
+
+set.seed(2026)
+
+knn_results <- tune_grid(
+  knn_workflow,
+  resamples = grouped_folds,
+  grid = knn_grid,
+  metrics = pd_metrics,
+  control = control_grid(
+    save_pred = TRUE,
+    verbose = TRUE
+  )
+)
+
+
+# ============================================================
+# TUNE LINEAR SVM
+# ============================================================
+
+set.seed(2026)
+
+svm_linear_results <- tune_grid(
+  svm_linear_workflow,
+  resamples = grouped_folds,
+  grid = svm_linear_grid,
+  metrics = pd_metrics,
+  control = control_grid(
+    save_pred = TRUE,
+    verbose = TRUE
+  )
+)
+
+
+# ============================================================
+# TUNE RADIAL SVM
+# ============================================================
+
+set.seed(2026)
+
+svm_rbf_results <- tune_grid(
+  svm_rbf_workflow,
+  resamples = grouped_folds,
+  grid = svm_rbf_grid,
+  metrics = pd_metrics,
+  control = control_grid(
+    save_pred = TRUE,
+    verbose = TRUE
+  )
+)
+
+
+# ============================================================
+# TUNE RANDOM FOREST
+# ============================================================
+
+set.seed(2026)
+
+rf_results <- tune_grid(
+  rf_workflow,
+  resamples = grouped_folds,
+  grid = rf_grid,
+  metrics = pd_metrics,
+  control = control_grid(
+    save_pred = TRUE,
+    verbose = TRUE
+  )
+)
+
+
+# ============================================================
+# TUNE XGBOOST
+# ============================================================
+
+set.seed(2026)
+
+xgb_results <- tune_grid(
+  xgb_workflow,
+  resamples = grouped_folds,
+  grid = xgb_grid,
+  metrics = pd_metrics,
+  control = control_grid(
+    save_pred = TRUE,
+    verbose = TRUE
+  )
+)
+
+```
+
+
+
+
+#### Select the best version of every model and build a leaderboard.
+
+*The best hyperparameter configuration for each algorithm was selected according to its participant-grouped cross-validated ROC-AUC.*
+
+*The definitive cross-validation results were:*
+
+| Model	| Mean ROC-AUC	| Standard Error|
+|:-------|:------|:------|
+|XGBoost | 0.873 | 0.010|
+|Penalized Logistic Regression | 0.828 | 0.011|
+|Random Forest | 0.817 | 0.012|
+|Radial SVM | 0.806 | 0.013|
+|KNN | 0.802 | 0.011|
+|Linear SVM | 0.776 | 0.014|
+
+##### XGBoost demonstrated the strongest mean discrimination during leakage-aware model development.
+
+*Its grouped-CV performance also included:*
+
+- *ROC-AUC = 0.873*
+- *PR-AUC = 0.949*
+- *Accuracy = 0.839*
+- *Sensitivity = 0.957*
+- *Specificity = 0.491*
+- *Balanced accuracy = 0.724*
+
+*The model leaderboard emphasizes that performance estimates are more conservative once participant clustering is respected.*
+
+
+-
+```{r select-best-models}
+
+# ============================================================
+# SELECT BEST HYPERPARAMETERS BY ROC-AUC
+# ============================================================
+
+best_glmnet <- select_best(
+  glmnet_results,
+  metric = "roc_auc"
+)
+
+best_knn <- select_best(
+  knn_results,
+  metric = "roc_auc"
+)
+
+best_svm_linear <- select_best(
+  svm_linear_results,
+  metric = "roc_auc"
+)
+
+best_svm_rbf <- select_best(
+  svm_rbf_results,
+  metric = "roc_auc"
+)
+
+best_rf <- select_best(
+  rf_results,
+  metric = "roc_auc"
+)
+
+best_xgb <- select_best(
+  xgb_results,
+  metric = "roc_auc"
+)
+
+
+# Display selected parameters
+best_glmnet
+best_knn
+best_svm_linear
+best_svm_rbf
+best_rf
+best_xgb
+
+
+# ============================================================
+# HELPER FUNCTION:
+# EXTRACT BEST CROSS-VALIDATED METRICS
+# ============================================================
+
+get_best_metrics <- function(
+    tuning_object,
+    best_parameters,
+    model_name
+) {
+
+  tuning_object |>
+    collect_metrics(
+      summarize = TRUE
+    ) |>
+    semi_join(
+      best_parameters,
+      by = names(best_parameters)
+    ) |>
+    mutate(
+      model = model_name
+    ) |>
+    select(
+      model,
+      .metric,
+      mean,
+      std_err
+    )
+}
+
+
+# ============================================================
+# COMBINE MODEL RESULTS
+# ============================================================
+
+model_cv_metrics <- bind_rows(
+
+  get_best_metrics(
+    glmnet_results,
+    best_glmnet,
+    "Penalized Logistic"
+  ),
+
+  get_best_metrics(
+    knn_results,
+    best_knn,
+    "KNN"
+  ),
+
+  get_best_metrics(
+    svm_linear_results,
+    best_svm_linear,
+    "Linear SVM"
+  ),
+
+  get_best_metrics(
+    svm_rbf_results,
+    best_svm_rbf,
+    "Radial SVM"
+  ),
+
+  get_best_metrics(
+    rf_results,
+    best_rf,
+    "Random Forest"
+  ),
+
+  get_best_metrics(
+    xgb_results,
+    best_xgb,
+    "XGBoost"
+  )
+)
+
+
+# View all metrics
+model_cv_metrics
+
+
+# ============================================================
+# CREATE ROC-AUC LEADERBOARD
+# ============================================================
+
+roc_leaderboard <- model_cv_metrics |>
+  filter(
+    .metric == "roc_auc"
+  ) |>
+  arrange(
+    desc(mean)
+  )
+
+
+roc_leaderboard
+
+
+# ============================================================
+# IDENTIFY BEST CROSS-VALIDATED MODEL
+# ============================================================
+
+best_cv_model <- roc_leaderboard |>
+  slice(1) |>
+  pull(model)
+
+
+best_cv_model
+
+
+# Add a plotting category so that the best-performing model
+# is highlighted automatically rather than hard-coded.
+
+roc_leaderboard <- roc_leaderboard |>
+  mutate(
+    performance_group =
+      if_else(
+        model == best_cv_model,
+        "Best-performing model",
+        "Other models"
+      )
+  )
+
+
+# ============================================================
+# FIGURE 3:
+# MODEL LEADERBOARD
+# ============================================================
+
+leaderboard_plot <- roc_leaderboard |>
+  ggplot(
+    aes(
+      x = reorder(model, mean),
+      y = mean,
+      fill = performance_group
+    )
+  ) +
+
+  # Neutral color for comparison models;
+  # highlight only the highest-performing model.
+  geom_col(
+    width = 0.70,
+    show.legend = FALSE
+  ) +
+
+  scale_fill_manual(
+    values = c(
+      "Best-performing model" = "#2A9D8F",
+      "Other models" = "#8D99AE"
+    )
+  ) +
+
+  # Approximate 95% intervals around
+  # cross-validated ROC-AUC.
+  geom_errorbar(
+    aes(
+      ymin =
+        mean -
+        1.96 * std_err,
+
+      ymax =
+        mean +
+        1.96 * std_err
+    ),
+    width = 0.15,
+    linewidth = 0.8,
+    color = "black"
+  ) +
+
+  # Place ROC-AUC labels beyond the upper
+  # confidence interval rather than directly
+  # beside the bar.
+  geom_text(
+    aes(
+      y =
+        mean +
+        1.96 * std_err +
+        0.015,
+
+      label =
+        number(
+          mean,
+          accuracy = 0.001
+        )
+    ),
+    hjust = 0,
+    fontface = "bold",
+    size = 4.5,
+    color = "black"
+  ) +
+
+  coord_flip() +
+
+  scale_y_continuous(
+    limits = c(0, 1.10),
+    breaks = seq(
+      0,
+      1,
+      by = 0.20
+    ),
+    labels = number_format(
+      accuracy = 0.01
+    ),
+    expand = expansion(
+      mult = c(0, 0.01)
+    )
+  ) +
+
+  labs(
+    title =
+      "Participant-Grouped Model Performance",
+    subtitle =
+      "Leakage-aware cross-validation used for model development",
+    x = NULL,
+    y = "Cross-validated ROC-AUC",
+    caption =
+      "Bars show mean ROC-AUC; error bars represent mean ± 1.96 × standard error across resamples."
+  ) +
+
+  theme_minimal(
+    base_size = 14
+  ) +
+
+  theme(
+    plot.title =
+      element_text(
+        face = "bold",
+        size = 18
+      ),
+
+    plot.subtitle =
+      element_text(
+        size = 13
+      ),
+
+    axis.title.x =
+      element_text(
+        face = "bold"
+      ),
+
+    axis.text.y =
+      element_text(
+        size = 12
+      ),
+
+    panel.grid.major.y =
+      element_blank(),
+
+    plot.caption =
+      element_text(
+        size = 10,
+        hjust = 0
+      )
+  )
+
+
+leaderboard_plot
+
+
+ggsave(
+  here(
+    "figures",
+    "03_model_leaderboard.png"
+  ),
+  leaderboard_plot,
+  width = 9,
+  height = 6,
+  dpi = 300
+)
+
+```
+
+
+
+
+#### Recording-Level Leakage Experiment.
+
+*A dedicated experiment quantified the effect of violating participant-level independence.*
+
+*The same radial SVM modeling framework was evaluated using two resampling approaches.*
+
+##### Participant-grouped cross-validation
+
+##### ROC-AUC = 0.806
+
+##### Conventional recording-level cross-validation
+
+##### ROC-AUC = 0.906
+
+*Therefore:*
+
+##### Apparent ROC-AUC inflation = +0.100
+
+*Treating repeated recordings as independent observations produced an absolute 10.0-percentage-point increase in apparent model discrimination.*
+
+
+
+*This is the central methodological result of VoiceMark PD.*
+
+*It demonstrates that seemingly impressive performance can be partly attributable to the validation design rather than to genuine patient-level generalization.*
+
+
+-
+```{r leakage-experiment, cache=FALSE}
+
+# ============================================================
+# RADIAL SVM USING NAIVE RECORDING-LEVEL CV
+# ============================================================
+
+set.seed(2026)
+
+svm_naive_results <- tune_grid(
+  svm_rbf_workflow,
+  resamples = naive_folds,
+  grid = svm_rbf_grid,
+  metrics = pd_metrics,
+  control = control_grid(
+    save_pred = TRUE
+  )
+)
+
+
+# ============================================================
+# BEST RECORDING-LEVEL SVM
+# ============================================================
+
+best_svm_naive <- select_best(
+  svm_naive_results,
+  metric = "roc_auc"
+)
+
+
+# ============================================================
+# EXTRACT ROC-AUC FROM NAIVE MODEL
+# ============================================================
+
+naive_auc <- svm_naive_results |>
+  collect_metrics() |>
+  semi_join(
+    best_svm_naive,
+    by = names(best_svm_naive)
+  ) |>
+  filter(
+    .metric == "roc_auc"
+  ) |>
+  transmute(
+    validation =
+      "Recording-level CV",
+    roc_auc = mean,
+    std_err = std_err
+  )
+
+
+# ============================================================
+# EXTRACT ROC-AUC FROM CORRECT GROUPED MODEL
+# ============================================================
+
+grouped_auc <- svm_rbf_results |>
+  collect_metrics() |>
+  semi_join(
+    best_svm_rbf,
+    by = names(best_svm_rbf)
+  ) |>
+  filter(
+    .metric == "roc_auc"
+  ) |>
+  transmute(
+    validation =
+      "Participant-grouped CV",
+    roc_auc = mean,
+    std_err = std_err
+  )
+
+
+# ============================================================
+# COMBINE RESULTS
+# ============================================================
+
+leakage_results <- bind_rows(
+  naive_auc,
+  grouped_auc
+) |>
+  mutate(
+    validation =
+      factor(
+        validation,
+        levels = c(
+          "Participant-grouped CV",
+          "Recording-level CV"
+        )
+      )
+  )
+
+
+leakage_results
+
+
+# ============================================================
+# CALCULATE APPARENT INFLATION
+# ============================================================
+
+leakage_inflation <-
+  leakage_results |>
+  summarise(
+    difference =
+      roc_auc[
+        validation ==
+          "Recording-level CV"
+      ] -
+      roc_auc[
+        validation ==
+          "Participant-grouped CV"
+      ]
+  )
+
+
+leakage_inflation
+
+
+# Store the difference as a single numeric value
+# for use in the figure annotation.
+
+inflation_value <-
+  leakage_inflation |>
+  pull(difference)
+
+
+# ============================================================
+# FIGURE 4:
+# LEAKAGE EFFECT
+# ============================================================
+
+leakage_plot <- leakage_results |>
+  ggplot(
+    aes(
+      x = validation,
+      y = roc_auc,
+      fill = validation
+    )
+  ) +
+
+  geom_col(
+    width = 0.60,
+    show.legend = FALSE
+  ) +
+
+  scale_fill_manual(
+    values = c(
+      "Participant-grouped CV" = "#457B9D",
+      "Recording-level CV" = "#E76F51"
+    )
+  ) +
+
+  geom_errorbar(
+    aes(
+      ymin =
+        roc_auc -
+        1.96 * std_err,
+
+      ymax =
+        roc_auc +
+        1.96 * std_err
+    ),
+    width = 0.12,
+    linewidth = 0.8,
+    color = "black"
+  ) +
+
+  # Place ROC-AUC labels ABOVE the upper CI limits
+  # rather than directly above the bars.
+  geom_text(
+    aes(
+      y =
+        roc_auc +
+        1.96 * std_err +
+        0.025,
+
+      label =
+        number(
+          roc_auc,
+          accuracy = 0.001
+        )
+    ),
+    fontface = "bold",
+    size = 5
+  ) +
+
+  # Main methodological takeaway
+  annotate(
+    "text",
+    x = 1.5,
+    y = 1.065,
+    label =
+      paste0(
+        "Apparent ROC-AUC inflation: +",
+        number(
+          inflation_value,
+          accuracy = 0.001
+        )
+      ),
+    fontface = "bold",
+    size = 4.5
+  ) +
+
+  scale_y_continuous(
+    limits = c(0, 1.11),
+    breaks = seq(
+      0,
+      1,
+      by = 0.25
+    ),
+    labels = number_format(
+      accuracy = 0.01
+    ),
+    expand = expansion(
+      mult = c(0, 0.01)
+    )
+  ) +
+
+  labs(
+    title =
+      "Does Recording-Level Validation Inflate Apparent Performance?",
+    subtitle =
+      "The same radial SVM evaluated under participant-grouped and recording-level cross-validation",
+    x = NULL,
+    y = "Cross-validated ROC-AUC",
+    caption =
+      "Participant-grouped validation keeps all recordings from the same participant within the same resampling fold."
+  ) +
+
+  theme_minimal(
+    base_size = 14
+  ) +
+
+  theme(
+    plot.title =
+      element_text(
+        face = "bold",
+        size = 18
+      ),
+
+    plot.subtitle =
+      element_text(
+        size = 13
+      ),
+
+    axis.title.y =
+      element_text(
+        face = "bold"
+      ),
+
+    axis.text.x =
+      element_text(
+        size = 12
+      ),
+
+    panel.grid.major.x =
+      element_blank(),
+
+    plot.caption =
+      element_text(
+        size = 10,
+        hjust = 0
+      )
+  )
+
+leakage_plot
+
+
+ggsave(
+  here(
+    "figures",
+    "04_leakage_comparison.png"
+  ),
+  leakage_plot,
+  width = 9,
+  height = 6,
+  dpi = 300
+)
+```
+
+
+
+
+#### Final Participant-Level Evaluation: Finalize all models, train them and evaluate the untouched test participants.
+
+*After tuning, final workflows were fitted using the full training sample and evaluated on 51 completely held-out participants:*
+
+- *38 PD participants*
+- *13 healthy controls*
+
+*Each participant contributed three recordings.*
+
+*Instead of treating those three predictions as separate outcomes, recording-level PD probabilities were averaged within participant, generating one probability and one classification for each person.*
+
+*Final held-out performance was:*
+
+| Model |	ROC-AUC	| PR-AUC	| Accuracy	| Balanced Accuracy	| Sensitivity	| Specificity |
+|:-------|:------|:-------|:------|:-------|:------|:------|
+|Penalized Logistic|0.927|0.970|0.941|0.885|1.000|0.769|
+|Linear SVM|0.907|0.969|0.804|0.717|0.895|0.538|
+|XGBoost|0.901|0.961|0.863|0.756|0.974|0.538|
+|Random Forest|0.899|0.961|0.902|0.808|1.000|0.615|
+|KNN|0.870|0.954|0.863|0.731|1.000|0.462|
+|Radial SVM|0.862|0.943|0.843|0.819|0.868|0.769|
+
+*Although XGBoost led cross-validation, penalized logistic regression produced the numerically strongest performance on the held-out participant sample.*
+
+*For penalized logistic regression:*
+
+- *ROC-AUC = 0.927*
+- *PR-AUC = 0.970*
+- *Accuracy = 94.1%*
+- *Balanced accuracy = 88.5%*
+- *Sensitivity = 100%*
+- *Specificity = 76.9%*
+- *F1 score = 0.962*
+- *Cohen's kappa = 0.832*
+- *Matthews correlation coefficient = 0.844*
+
+*The confusion matrix contained:*
+
+- *38 true positives*
+- *10 true negatives*
+- *3 false positives*
+- *0 false negatives*
+
+*Thus, all 38 PD participants in this held-out sample were detected, while 10 of 13 healthy controls were correctly classified.*
+
+
+-
+```{r final-models-and-test-evaluation, cache=FALSE}
+
+# ============================================================
+# FINALIZE EACH WORKFLOW
+# ============================================================
+
+final_glmnet_workflow <-
+  finalize_workflow(
+    glmnet_workflow,
+    best_glmnet
+  )
+
+
+final_knn_workflow <-
+  finalize_workflow(
+    knn_workflow,
+    best_knn
+  )
+
+
+final_svm_linear_workflow <-
+  finalize_workflow(
+    svm_linear_workflow,
+    best_svm_linear
+  )
+
+
+final_svm_rbf_workflow <-
+  finalize_workflow(
+    svm_rbf_workflow,
+    best_svm_rbf
+  )
+
+
+final_rf_workflow <-
+  finalize_workflow(
+    rf_workflow,
+    best_rf
+  )
+
+
+final_xgb_workflow <-
+  finalize_workflow(
+    xgb_workflow,
+    best_xgb
+  )
+
+
+# ============================================================
+# FIT FINAL MODELS USING ALL TRAINING RECORDINGS
+# ============================================================
+
+final_glmnet_fit <-
+  fit(
+    final_glmnet_workflow,
+    data = train_data
+  )
+
+
+final_knn_fit <-
+  fit(
+    final_knn_workflow,
+    data = train_data
+  )
+
+
+final_svm_linear_fit <-
+  fit(
+    final_svm_linear_workflow,
+    data = train_data
+  )
+
+
+final_svm_rbf_fit <-
+  fit(
+    final_svm_rbf_workflow,
+    data = train_data
+  )
+
+
+final_rf_fit <-
+  fit(
+    final_rf_workflow,
+    data = train_data
+  )
+
+
+final_xgb_fit <-
+  fit(
+    final_xgb_workflow,
+    data = train_data
+  )
+
+
+# ============================================================
+# HELPER FUNCTION:
+# GENERATE PARTICIPANT-LEVEL TEST PREDICTIONS
+# ============================================================
+#
+# First:
+# predict each individual recording.
+#
+# Then:
+# average the 3 recording probabilities belonging
+# to the same participant.
+#
+# Finally:
+# classify >= 0.50 as PD.
+
+get_subject_predictions <- function(
+    fitted_workflow,
+    model_name
+) {
+
+  recording_predictions <-
+    predict(
+      fitted_workflow,
+      new_data = test_data,
+      type = "prob"
+    ) |>
+    bind_cols(
+      test_data |>
+        select(
+          id,
+          class
+        )
+    )
+
+  subject_predictions <-
+    recording_predictions |>
+    group_by(id) |>
+    summarise(
+      class = first(class),
+
+      .pred_PD =
+        mean(.pred_PD),
+
+      .groups = "drop"
+    ) |>
+    mutate(
+      .pred_class =
+        if_else(
+          .pred_PD >= 0.50,
+          "PD",
+          "Normal"
+        ),
+
+      .pred_class =
+        factor(
+          .pred_class,
+          levels =
+            c(
+              "PD",
+              "Normal"
+            )
+        ),
+
+      model = model_name
+    )
+
+  return(
+    subject_predictions
+  )
+}
+
+
+# ============================================================
+# GENERATE PREDICTIONS FOR ALL SIX MODELS
+# ============================================================
+
+final_subject_predictions <- bind_rows(
+
+  get_subject_predictions(
+    final_glmnet_fit,
+    "Penalized Logistic"
+  ),
+
+  get_subject_predictions(
+    final_knn_fit,
+    "KNN"
+  ),
+
+  get_subject_predictions(
+    final_svm_linear_fit,
+    "Linear SVM"
+  ),
+
+  get_subject_predictions(
+    final_svm_rbf_fit,
+    "Radial SVM"
+  ),
+
+  get_subject_predictions(
+    final_rf_fit,
+    "Random Forest"
+  ),
+
+  get_subject_predictions(
+    final_xgb_fit,
+    "XGBoost"
+  )
+)
+
+
+# View predictions
+final_subject_predictions
+
+
+# ============================================================
+# PARTICIPANT-LEVEL TEST METRICS
+# ============================================================
+
+test_metrics <- final_subject_predictions |>
+  group_by(model) |>
+  group_modify(
+    ~ bind_rows(
+
+      roc_auc(
+        .x,
+        truth = class,
+        .pred_PD
+      ),
+
+      pr_auc(
+        .x,
+        truth = class,
+        .pred_PD
+      ),
+
+      accuracy(
+        .x,
+        truth = class,
+        estimate = .pred_class
+      ),
+
+      bal_accuracy(
+        .x,
+        truth = class,
+        estimate = .pred_class
+      ),
+
+      sens(
+        .x,
+        truth = class,
+        estimate = .pred_class
+      ),
+
+      spec(
+        .x,
+        truth = class,
+        estimate = .pred_class
+      ),
+
+      f_meas(
+        .x,
+        truth = class,
+        estimate = .pred_class
+      ),
+
+      kap(
+        .x,
+        truth = class,
+        estimate = .pred_class
+      ),
+
+      mcc(
+        .x,
+        truth = class,
+        estimate = .pred_class
+      )
+    )
+  ) |>
+  ungroup()
+
+
+test_metrics
+
+```
+
+
+
+
+#### Final Model Performance Visualization: final ROC, precision-recall, confusion matrix, probability and calibration figures.
+
+##### ROC performance
+
+*All six models demonstrated useful discrimination on the held-out participants.*
+
+
+##### Precision-recall performance
+
+*Because PD comprised most of the sample, precision-recall performance was also examined.*
+
+
+##### Penalized logistic confusion matrix
+
+*The numerically strongest held-out model classified 48 of 51 participants correctly.*
+
+
+##### Participant-level predicted probabilities
+
+*Participant-level probabilities show clear separation for many subjects, while also illustrating the healthy controls that received elevated PD probabilities.*
+
+
+##### Calibration
+
+*Calibration analysis compared predicted probability with observed PD frequency across probability groups.*
+
+
+-
+```{r final-performance-visualizations}
+
+# ============================================================
+# FIGURE 5:
+# ROC CURVES
+# ============================================================
+
+roc_data <- final_subject_predictions |>
+  group_by(model) |>
+  roc_curve(
+    truth = class,
+    .pred_PD
+  )
+
+
+roc_plot <- roc_data |>
+  autoplot() +
+  geom_abline(
+    linetype = "dashed"
+  ) +
+  labs(
+    title =
+      "ROC Curves for Leakage-Aware Parkinson's Disease Models",
+    subtitle =
+      "Performance assessed on independent held-out participants",
+    x = "1 - Specificity",
+    y = "Sensitivity"
+  ) +
+  theme_minimal(
+    base_size = 14
+  ) +
+  theme(
+    plot.title =
+      element_text(face = "bold")
+  )
+
+
+roc_plot
+
+
+ggsave(
+  here(
+    "figures",
+    "05_test_roc_curves.png"
+  ),
+  roc_plot,
+  width = 9,
+  height = 7,
+  dpi = 300
+)
+
+
+# ============================================================
+# FIGURE 6:
+# PRECISION-RECALL CURVES
+# ============================================================
+
+pr_data <- final_subject_predictions |>
+  group_by(model) |>
+  pr_curve(
+    truth = class,
+    .pred_PD
+  )
+
+
+pr_plot <- pr_data |>
+  autoplot() +
+  labs(
+    title =
+      "Precision-Recall Performance",
+    subtitle =
+      "Participant-level Parkinson's disease classification",
+    x = "Recall",
+    y = "Precision"
+  ) +
+  theme_minimal(
+    base_size = 14
+  ) +
+  theme(
+    plot.title =
+      element_text(face = "bold")
+  )
+
+
+pr_plot
+
+
+ggsave(
+  here(
+    "figures",
+    "06_precision_recall_curves.png"
+  ),
+  pr_plot,
+  width = 9,
+  height = 7,
+  dpi = 300
+)
+
+
+# ============================================================
+# IDENTIFY BEST MODEL ON HELD-OUT TEST ROC-AUC
+# ============================================================
+
+best_test_model <- test_metrics |>
+  filter(
+    .metric == "roc_auc"
+  ) |>
+  arrange(
+    desc(.estimate)
+  ) |>
+  slice(1) |>
+  pull(model)
+
+
+best_test_model
+
+
+best_model_predictions <-
+  final_subject_predictions |>
+  filter(
+    model == best_test_model
+  )
+
+
+# ============================================================
+# FIGURE 7:
+# CONFUSION MATRIX
+# ============================================================
+
+best_confusion_matrix <-
+  best_model_predictions |>
+  conf_mat(
+    truth = class,
+    estimate = .pred_class
+  )
+
+
+best_confusion_matrix
+
+
+# Convert the confusion matrix into a data frame so that
+# we have full control over the heatmap appearance.
+
+confusion_data <-
+  as.data.frame(
+    best_confusion_matrix$table
+  )
+
+
+# Create a threshold for dynamically changing text color.
+# Cells with relatively large counts will use white text;
+# lighter cells will use black text.
+
+confusion_data <-
+  confusion_data |>
+  mutate(
+    text_color =
+      if_else(
+        Freq > max(Freq) / 2,
+        "white",
+        "black"
+      )
+  )
+
+
+confusion_plot <-
+  confusion_data |>
+  ggplot(
+    aes(
+      x = Truth,
+      y = Prediction,
+      fill = Freq
+    )
+  ) +
+  
+  # Heatmap cells
+  geom_tile(
+    color = "white",
+    linewidth = 1.2
+  ) +
+  
+  # Cell frequencies
+  geom_text(
+    aes(
+      label = Freq,
+      color = text_color
+    ),
+    size = 7,
+    fontface = "bold"
+  ) +
+  
+  # Sequential color scale:
+  # low frequencies = very light teal
+  # high frequencies = dark teal
+  scale_fill_gradient(
+    low = "#EDF6F9",
+    high = "#2A9D8F",
+    name = "Participants"
+  ) +
+  
+  # Use the text colors created above without
+  # displaying a redundant text-color legend
+  scale_color_identity() +
+  
+  # Preserve square confusion-matrix cells
+  coord_equal() +
+  
+  labs(
+    title =
+      paste0(
+        "Confusion Matrix: ",
+        best_test_model
+      ),
+    subtitle =
+      "Classification of independent held-out participants",
+    x = "True disease status",
+    y = "Predicted disease status"
+  ) +
+  
+  theme_minimal(
+    base_size = 14
+  ) +
+  
+  theme(
+    plot.title =
+      element_text(
+        face = "bold",
+        size = 18
+      ),
+    
+    plot.subtitle =
+      element_text(
+        size = 13
+      ),
+    
+    axis.title =
+      element_text(
+        face = "bold"
+      ),
+    
+    axis.text =
+      element_text(
+        size = 13
+      ),
+    
+    # Remove gridlines because the heatmap cells
+    # already define the matrix structure
+    panel.grid =
+      element_blank(),
+    
+    # Place legend neatly on the right
+    legend.position =
+      "right"
+  )
+
+
+confusion_plot
+
+
+ggsave(
+  here(
+    "figures",
+    "07_confusion_matrix.png"
+  ),
+  confusion_plot,
+  width = 7,
+  height = 6,
+  dpi = 300
+)
+
+
+# ============================================================
+# FIGURE 8:
+# PARTICIPANT-LEVEL PD PROBABILITIES
+# ============================================================
+
+probability_plot <-
+  best_model_predictions |>
+  arrange(.pred_PD) |>
+  mutate(
+    participant_order =
+      row_number()
+  ) |>
+  ggplot(
+    aes(
+      x = participant_order,
+      y = .pred_PD,
+      shape = class
+    )
+  ) +
+  geom_point(
+    size = 3
+  ) +
+  geom_hline(
+    yintercept = 0.50,
+    linetype = "dashed"
+  ) +
+  labs(
+    title =
+      paste0(
+        "Participant-Level Predictions: ",
+        best_test_model
+      ),
+    subtitle =
+      "Each point represents one independent held-out participant",
+    x =
+      "Participants ordered by predicted probability",
+    y =
+      "Predicted probability of Parkinson's disease",
+    shape =
+      "True status"
+  ) +
+  theme_minimal(
+    base_size = 14
+  ) +
+  theme(
+    plot.title =
+      element_text(face = "bold")
+  )
+
+
+probability_plot
+
+
+ggsave(
+  here(
+    "figures",
+    "08_participant_probabilities.png"
+  ),
+  probability_plot,
+  width = 10,
+  height = 6,
+  dpi = 300
+)
+
+
+# ============================================================
+# FIGURE 9:
+# CALIBRATION
+# ============================================================
+#
+# With only ~20% of 252 participants in the held-out set,
+# using 10 calibration bins would make some bins very small.
+#
+# We therefore use 5 groups here.
+
+calibration_data <-
+  best_model_predictions |>
+  mutate(
+    probability_bin =
+      ntile(
+        .pred_PD,
+        5
+      )
+  ) |>
+  group_by(
+    probability_bin
+  ) |>
+  summarise(
+    predicted_probability =
+      mean(.pred_PD),
+
+    observed_pd =
+      mean(
+        class == "PD"
+      ),
+
+    n = n(),
+
+    .groups = "drop"
+  )
+
+
+calibration_plot <-
+  calibration_data |>
+  ggplot(
+    aes(
+      x = predicted_probability,
+      y = observed_pd
+    )
+  ) +
+  geom_point(
+    size = 4
+  ) +
+  geom_line() +
+  geom_abline(
+    linetype = "dashed"
+  ) +
+  coord_equal(
+    xlim = c(0, 1),
+    ylim = c(0, 1)
+  ) +
+  labs(
+    title =
+      paste0(
+        "Calibration: ",
+        best_test_model
+      ),
+    subtitle =
+      "Observed PD frequency compared with predicted probability",
+    x =
+      "Mean predicted probability",
+    y =
+      "Observed proportion with PD"
+  ) +
+  theme_minimal(
+    base_size = 14
+  ) +
+  theme(
+    plot.title =
+      element_text(face = "bold")
+  )
+
+
+calibration_plot
+
+
+ggsave(
+  here(
+    "figures",
+    "09_calibration.png"
+  ),
+  calibration_plot,
+  width = 7,
+  height = 7,
+  dpi = 300
+)
+
+
+# ============================================================
+# COMBINE ROC + PR FOR README/POSTER
+# ============================================================
+
+performance_panel <-
+  roc_plot +
+  pr_plot
+
+
+performance_panel
+
+
+ggsave(
+  here(
+    "figures",
+    "10_roc_pr_combined.png"
+  ),
+  performance_panel,
+  width = 14,
+  height = 6,
+  dpi = 300
+)
+
+```
+
+
+
+
+#### Model Interpretation with DALEX.
+
+*A complementary model-interpretation analysis was performed on the fitted random forest using DALEX.*
+
+*This analysis should be interpreted separately from the held-out penalized-logistic result: its purpose was to investigate which acoustic variables a nonlinear ensemble model relied upon, not to claim that random forest was the universally optimal classifier.*
+
+*Permutation feature importance was evaluated using binary log loss.*
+
+*Each feature was repeatedly permuted while the remaining predictors were preserved. If disrupting a predictor caused model loss to increase substantially, that predictor was interpreted as more influential.*
+
+*The definitive analysis used:*
+
+#### 20 permutation repetitions per feature
+
+*The 20 most influential predictors showed a strong contribution from several acoustic feature families.*
+
+*The three largest mean permutation effects were:*
+
+|Feature |	Mean increase in binary log loss|
+|:-------|:------|
+|std_delta_delta_log_energy|0.0163
+std_delta_log_energy|0.0142
+std_9th_delta_delta|0.0114
+
+*The top-20 set also contained numerous TQWT-derived predictors.*
+
+*Notably:*
+
+- *11 of the top 20 predictors were TQWT-derived measures, including TKEO, entropy, energy, and distributional features;*
+- *several jitter measures were influential, including loc_abs_jitter, ddp_jitter, loc_pct_jitter, and rap_jitter;*
+- *apq11shimmer also appeared among the top predictors; and*
+- *delta/delta-delta log-energy measures occupied the highest positions.*
+
+*These results suggest that predictive information was distributed across both conventional dysphonia metrics and higher-dimensional time-frequency representations.*
+
+*Importantly, permutation importance describes model reliance, not causal biological importance.*
+
+
+-
+```{r dalex-model-explanation, cache=FALSE}
+
+# ============================================================
+# PREPARE DATA FOR DALEX
+# ============================================================
+
+dalex_x <- train_data |>
+  select(
+    -class
+  )
+ 
+
+# Convert outcome to numeric form:
+#
+# PD     = 1
+# Normal = 0
+
+dalex_y <- if_else(
+  train_data$class == "PD",
+  1,
+  0
+)
+
+
+# ============================================================
+# CUSTOM PD PROBABILITY PREDICTION FUNCTION
+# ============================================================
+#
+# Return one numeric predicted probability of PD
+# for every observation.
+
+pd_predict_function <- function(model, newdata) {
+
+  predict(
+    model,
+    new_data = newdata,
+    type = "prob"
+  ) |>
+    pull(.pred_PD)
+}
+
+
+# ============================================================
+# CUSTOM BINARY LOG-LOSS FUNCTION
+# ============================================================
+#
+# DALEX::loss_cross_entropy() expects a different prediction
+# structure than our one-column binary probability vector.
+#
+# This function is specifically written for:
+#
+# observed  = 0/1 outcome
+# predicted = probability of PD
+#
+# Lower log loss = better predictions.
+# If permuting a useful feature damages the model,
+# log loss should increase.
+
+binary_log_loss <- function(observed, predicted) {
+
+  # Avoid taking log(0).
+  epsilon <- 1e-15
+
+  predicted <- pmin(
+    pmax(
+      predicted,
+      epsilon
+    ),
+    1 - epsilon
+  )
+
+  -mean(
+    observed * log(predicted) +
+      (1 - observed) * log(1 - predicted)
+  )
+}
+
+
+# Give the loss function a readable name for DALEX.
+attr(
+  binary_log_loss,
+  "loss_name"
+) <- "Binary log loss"
+
+
+# ============================================================
+# CREATE DALEX EXPLAINER DIRECTLY
+# ============================================================
+
+rf_explainer <-
+  DALEX::explain(
+    model =
+      final_rf_fit,
+
+    data =
+      dalex_x,
+
+    y =
+      dalex_y,
+
+    predict_function =
+      pd_predict_function,
+
+    label =
+      "Random Forest",
+
+    type =
+      "classification",
+
+    verbose =
+      FALSE
+  )
+
+
+# ============================================================
+# VERIFY EXPLAINER PREDICTIONS
+# ============================================================
+#
+# We previously found approximately:
+#
+# min    ~0.063
+# max    ~0.999
+# SD     ~0.314
+# unique ~602
+#
+# These diagnostics should again show meaningful variation.
+
+summary(
+  rf_explainer$y_hat
+)
+
+range(
+  rf_explainer$y_hat
+)
+
+sd(
+  rf_explainer$y_hat
+)
+
+length(
+  unique(
+    rf_explainer$y_hat
+  )
+)
+
+
+# ============================================================
+# VERIFY LOSS FUNCTION MANUALLY
+# ============================================================
+#
+# First calculate the intact model's binary log loss.
+
+baseline_loss <-
+  binary_log_loss(
+    observed =
+      dalex_y,
+
+    predicted =
+      rf_explainer$y_hat
+  )
+
+
+baseline_loss
+
+
+# ============================================================
+# MANUAL PPE PERMUTATION CHECK
+# ============================================================
+#
+# We already established that permuting PPE changes
+# predictions. Here we additionally confirm that it
+# changes binary log loss.
+
+set.seed(2026)
+
+dalex_x_ppe_permuted <-
+  dalex_x
+
+
+dalex_x_ppe_permuted$ppe <-
+  sample(
+    dalex_x_ppe_permuted$ppe
+  )
+
+
+ppe_permuted_predictions <-
+  pd_predict_function(
+    final_rf_fit,
+    dalex_x_ppe_permuted
+  )
+
+
+ppe_permuted_loss <-
+  binary_log_loss(
+    observed =
+      dalex_y,
+
+    predicted =
+      ppe_permuted_predictions
+  )
+
+
+ppe_permuted_loss
+
+
+ppe_loss_increase <-
+  ppe_permuted_loss -
+  baseline_loss
+
+
+ppe_loss_increase
+
+
+# ============================================================
+# PERMUTATION FEATURE IMPORTANCE
+# ============================================================
+#
+# DALEX now uses our binary log-loss function.
+#
+# type = "difference" means:
+#
+# loss after permutation - intact-model loss
+#
+# Larger positive values indicate that permuting the
+# feature damages predictive performance more strongly.
+#
+# B = 10 repeats each permutation to reduce instability.
+
+set.seed(2026)
+
+rf_importance <-
+  DALEX::model_parts(
+    rf_explainer,
+
+    loss_function =
+      binary_log_loss,
+
+    type =
+      "difference",
+
+    N =
+      if (FAST_MODE) {
+        200
+      } else {
+        NULL
+      },
+
+    B = 20
+  )
+
+
+# ============================================================
+# VIEW RAW RESULTS
+# ============================================================
+
+rf_importance
+
+
+# ============================================================
+# CLEAN AND SUMMARIZE IMPORTANCE RESULTS
+# ============================================================
+#
+# DALEX returns multiple permutation estimates per feature.
+# Average these repeated estimates to obtain one importance
+# value per feature.
+#
+# Exclude:
+#
+# _baseline_   = DALEX reference quantity
+# _full_model_ = intact-model reference quantity
+# id           = participant identifier
+# gender       = excluded from voice-only interpretation
+
+rf_importance_data <- rf_importance |>
+  as.data.frame() |>
+  tibble::as_tibble() |>
+  filter(
+    !variable %in%
+      c(
+        "_baseline_",
+        "_full_model_",
+        "id",
+        "gender"
+      )
+  ) |>
+  group_by(
+    variable
+  ) |>
+  summarise(
+    mean_importance =
+      mean(
+        dropout_loss,
+        na.rm = TRUE
+      ),
+
+    sd_importance =
+      sd(
+        dropout_loss,
+        na.rm = TRUE
+      ),
+
+    .groups =
+      "drop"
+  ) |>
+  arrange(
+    desc(mean_importance)
+  )
+
+
+# ============================================================
+# INSPECT TOP 20 BEFORE PLOTTING
+# ============================================================
+
+rf_importance_data
+
+
+# ============================================================
+# PREPARE TOP 20 FEATURES FOR FIGURE
+# ============================================================
+
+rf_importance_top20 <- rf_importance_data |>
+  slice_head(
+    n = 20
+  ) |>
+  mutate(
+    variable =
+      forcats::fct_reorder(
+        variable,
+        mean_importance
+      )
+  )
+
+
+# ============================================================
+# FIGURE 11:
+# DALEX FEATURE IMPORTANCE
+# ============================================================
+#
+# Teal is used because all bars represent the same
+# quantitative concept: permutation importance.
+
+dalex_importance_plot <- rf_importance_top20 |>
+  ggplot(
+    aes(
+      x = mean_importance,
+      y = variable
+    )
+  ) +
+
+  geom_col(
+    width = 0.70,
+    fill = "#2A9D8F"
+  ) +
+
+  geom_errorbar(
+    aes(
+      xmin =
+        pmax(
+          mean_importance - sd_importance,
+          0
+        ),
+
+      xmax =
+        mean_importance + sd_importance
+    ),
+    width = 0.18,
+    linewidth = 0.6,
+    color = "black"
+  ) +
+
+  geom_text(
+    aes(
+      x =
+        mean_importance +
+        sd_importance +
+        max(mean_importance) * 0.025,
+
+      label =
+        number(
+          mean_importance,
+          accuracy = 0.0001
+        )
+    ),
+    hjust = 0,
+    size = 3.7,
+    fontface = "bold"
+  ) +
+
+  scale_x_continuous(
+    expand =
+      expansion(
+        mult = c(
+          0,
+          0.18
+        )
+      )
+  ) +
+
+  labs(
+    title =
+      "Most Influential Acoustic Features",
+
+    subtitle =
+      "Permutation importance from the final random forest using binary log loss",
+
+    x =
+      "Increase in binary log loss after permutation",
+
+    y =
+      NULL,
+
+    caption =
+      "Bars show mean permutation importance across 20 repetitions; error bars show ±1 SD."
+  ) +
+  
+  theme_minimal(
+    base_size = 14
+  ) +
+
+  theme(
+    plot.title =
+      element_text(
+        face = "bold",
+        size = 18
+      ),
+
+    plot.subtitle =
+      element_text(
+        size = 13
+      ),
+
+    axis.title.x =
+      element_text(
+        face = "bold"
+      ),
+
+    axis.text.y =
+      element_text(
+        size = 11
+      ),
+
+    panel.grid.major.y =
+      element_blank(),
+
+    panel.grid.minor =
+      element_blank(),
+
+    plot.caption =
+      element_text(
+        size = 10,
+        hjust = 0
+      )
+  )
+
+
+dalex_importance_plot
+
+
+# ============================================================
+# SAVE FINAL HIGH-RESOLUTION FEATURE-IMPORTANCE FIGURE
+# ============================================================
+
+ggsave(
+  filename =
+    here(
+      "figures",
+      "11_dalex_feature_importance.png"
+    ),
+
+  plot =
+    dalex_importance_plot,
+
+  width = 10,
+  height = 7,
+  dpi = 300
+)
+
+```
+
+
+
+
+
+#### Save all major numerical results as CSV files.
+
+*The analysis automatically exports its major numerical outputs to a tables/ directory.*
+
+
+-
+```{r export-results}
+
+# ============================================================
+# SAVE TABLES
+# ============================================================
+
+write_csv(
+  subject_class_table,
+  here(
+    "tables",
+    "01_subject_class_distribution.csv"
+  )
+)
+
+
+write_csv(
+  split_summary,
+  here(
+    "tables",
+    "02_train_test_split.csv"
+  )
+)
+
+
+write_csv(
+  model_cv_metrics,
+  here(
+    "tables",
+    "03_cross_validation_metrics.csv"
+  )
+)
+
+
+write_csv(
+  leakage_results,
+  here(
+    "tables",
+    "04_leakage_comparison.csv"
+  )
+)
+
+
+write_csv(
+  test_metrics,
+  here(
+    "tables",
+    "05_final_test_metrics.csv"
+  )
+)
+
+
+write_csv(
+  final_subject_predictions,
+  here(
+    "tables",
+    "06_subject_predictions.csv"
+  )
+)
+
+
+write_csv(
+  rf_importance_data,
+  here(
+    "tables",
+    "07_dalex_feature_importance.csv"
+  )
+)
+
+```
+
+
+
+
+*The exported outputs are:*
+
+*1.) participant-level class distribution;*
+*2.) train/test split summary;*
+*3.) cross-validation performance metrics;*
+*4.) leakage-comparison estimates;*
+*5.) final held-out performance metrics;*
+*6.) participant-level model predictions; and*
+*7.) DALEX permutation feature importance.*
+
+*This allows every number presented in the README or figures to be traced back to a machine-readable result file.*
+
+
+
+### Discussion
+
+*VoiceMark PD demonstrates that validation design can materially alter conclusions about biomedical machine-learning performance.*
+
+*The most important result was the direct leakage experiment. Radial-SVM ROC-AUC increased from 0.806 under participant-grouped validation to 0.906 under conventional recording-level validation.*
+
+*An absolute difference of 0.100 AUC units is large enough to meaningfully change how a model might be perceived.*
+
+*The finding reinforces a fundamental methodological principle:*
+
+##### The unit of resampling should correspond to the independent biological unit to which the model is expected to generalize.
+
+*In this application, that unit is the participant, not the individual voice recording.*
+
+*The definitive analysis also produced an interesting algorithmic result.*
+
+*XGBoost achieved the best mean discrimination during repeated grouped cross-validation (ROC-AUC 0.873), yet penalized logistic regression performed best numerically in the 51-participant held-out sample (ROC-AUC 0.927).*
+
+*This difference cautions against overinterpreting small rankings between algorithms—particularly when the number of independent participants is modest relative to the dimensionality of the feature space.*
+
+*The strong held-out performance of penalized logistic regression is also scientifically useful. A comparatively simpler regularized linear model competed successfully against nonlinear SVMs and ensemble-tree methods despite the complexity of the acoustic predictor space.*
+
+*From a screening perspective, penalized logistic regression detected all 38 PD participants in the held-out sample. Its specificity was lower at 76.9%, with three healthy participants classified as PD.*
+
+*This pattern could be potentially attractive for a screening-oriented application where missing PD cases is particularly undesirable, but the model should not be interpreted as a clinical diagnostic tool.*
+
+*The DALEX analysis additionally suggests that prediction was not driven by a single acoustic domain. Delta-energy measures, TQWT-derived time-frequency characteristics, jitter, and shimmer all contributed to random-forest predictions.*
+
+
+
+### Limitations
+
+*Several limitations should guide interpretation.*
+
+*First, the dataset contains 756 recordings but only 252 independent people. The effective biological sample size is therefore substantially smaller than the raw number of observations suggests.*
+
+*Second, approximately 753 acoustic predictors were available for only 252 independent participants. This high-dimensional setting creates substantial opportunity for overfitting and unstable feature selection.*
+
+*Third, the sample was imbalanced, with approximately 75% of participants having PD. Accuracy alone can therefore be misleading.*
+
+*Fourth, the held-out evaluation contained only 51 participants, including 13 healthy controls. Estimates of specificity and between-model differences are consequently imprecise.*
+
+*Fifth, all data originate from a specific sustained-vowel protocol. Performance may differ for spontaneous speech, other microphones, other languages, different clinical settings, and broader disease populations.*
+
+*Sixth, the six fitted models were all evaluated on the same held-out sample. Penalized logistic regression was highlighted because it produced the highest numerical held-out ROC-AUC. Therefore, these results represent comparative held-out evaluation, not completely untouched external validation of a single pre-specified model.*
+
+*Seventh, strong discrimination does not establish clinical utility. Threshold selection, calibration, prospective testing, decision-curve analysis, comparison with clinical assessment, and external validation would all be needed before deployment.*
+
+*Eighth, DALEX permutation importance quantifies deterioration in predictive performance when features are disrupted. It should not be interpreted as evidence that a predictor causes Parkinson's disease or directly represents disease pathophysiology.*
+
+
+
+### Conclusion
+
+*VoiceMark PD demonstrates that how a biomedical machine-learning model is validated can matter as much as which algorithm is used.*
+
+*When repeated recordings were treated as independent observations, radial-SVM ROC-AUC was 0.906. When recordings were properly grouped by participant, ROC-AUC fell to 0.806.*
+
+*Thus, conventional recording-level validation produced:*
+
+#### +0.100 absolute AUC inflation
+
+*Despite this methodological correction, meaningful participant-level predictive performance remained.*
+
+*XGBoost achieved the highest repeated grouped cross-validation ROC-AUC (0.873), while penalized logistic regression achieved the strongest numerical held-out performance:*
+
+- *ROC-AUC 0.927*
+- *PR-AUC 0.970*
+- *Accuracy 94.1%*
+- *Sensitivity 100%*
+- *Specificity 76.9%*
+
+*The results support continued investigation of acoustic biomarkers for Parkinson's disease while emphasizing a broader lesson for biomedical data science:*
+
+##### Repeated measurements are not independent patients. Validation procedures must reflect the population to which a predictive model is expected to generalize.
+
+
+
+### Reproducibility.
+
+*The complete project was implemented in R and R Markdown.*
+
+*The definitive run used:*
+
+- *FAST_MODE = FALSE*
+- *random seed = 2026*
+- *5-fold participant-grouped cross-validation*
+- *5 repetitions*
+- *25 grouped resamples*
+- *expanded model-tuning grids*
+- *participant-level probability aggregation*
+- *300-dpi figure export*
+- *machine-readable CSV export*
+- *DALEX permutation importance with 20 repetitions*
+
+*Core packages included:*
+
+- *tidyverse*
+- *tidymodels*
+- *skimr*
+- *janitor*
+- *here*
+- *patchwork*
+- *GPfit*
+- *kknn*
+- *rsample*
+- *recipes*
+- *glmnet*
+- *kernlab*
+- *ranger*
+- *xgboost*
+- *DALEX*
+- *DALEXtra*
+- *themis*
+
+*A fixed random seed of 2026 was used for reproducibility.*
+
+*The repository includes:*
+
+- *the RStudio project;*
+- *complete R Markdown analysis;*
+- *model-development code;*
+- *participant-grouped resampling;*
+- *exported cross-validation metrics;*
+- *final participant-level predictions;*
+- *publication-quality figures;*
+- *leakage-analysis results; and*
+- *session information documenting the computational environment.*
+
+*All figures are exported at 300 dpi for reuse in GitHub, scientific posters, presentations, and abstracts.*
+
+*The complete computational environment can additionally be documented using:*
+
+*sessionInfo()*
+
+
+-
+```{r session-information}
+
+sessionInfo()
+
+```
+
+
+
+
+*Together, the R Markdown source, exported tables, figures, fixed seed, participant-grouped resampling, and session information make the project independently reviewable and substantially reproducible.*
+
+

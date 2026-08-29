@@ -1,0 +1,55 @@
+model,.metric,.estimator,.estimate
+KNN,roc_auc,binary,0.8704453441295547
+KNN,pr_auc,binary,0.954419598819575
+KNN,accuracy,binary,0.8627450980392157
+KNN,bal_accuracy,binary,0.7307692307692308
+KNN,sens,binary,1
+KNN,spec,binary,0.46153846153846156
+KNN,f_meas,binary,0.9156626506024096
+KNN,kap,binary,0.5608856088560885
+KNN,mcc,binary,0.6242944735808493
+Linear SVM,roc_auc,binary,0.9068825910931175
+Linear SVM,pr_auc,binary,0.9694864516814093
+Linear SVM,accuracy,binary,0.803921568627451
+Linear SVM,bal_accuracy,binary,0.7165991902834008
+Linear SVM,sens,binary,0.8947368421052632
+Linear SVM,spec,binary,0.5384615384615384
+Linear SVM,f_meas,binary,0.8717948717948718
+Linear SVM,kap,binary,0.45628997867803833
+Linear SVM,mcc,binary,0.4590119166637268
+Penalized Logistic,roc_auc,binary,0.9271255060728745
+Penalized Logistic,pr_auc,binary,0.9698477143272758
+Penalized Logistic,accuracy,binary,0.9411764705882353
+Penalized Logistic,bal_accuracy,binary,0.8846153846153846
+Penalized Logistic,sens,binary,1
+Penalized Logistic,spec,binary,0.7692307692307693
+Penalized Logistic,f_meas,binary,0.9620253164556963
+Penalized Logistic,kap,binary,0.832420591456736
+Penalized Logistic,mcc,binary,0.8443610548778121
+Radial SVM,roc_auc,binary,0.8623481781376519
+Radial SVM,pr_auc,binary,0.9432306505109059
+Radial SVM,accuracy,binary,0.8431372549019608
+Radial SVM,bal_accuracy,binary,0.8188259109311742
+Radial SVM,sens,binary,0.868421052631579
+Radial SVM,spec,binary,0.7692307692307693
+Radial SVM,f_meas,binary,0.8918918918918918
+Radial SVM,kap,binary,0.6069364161849711
+Radial SVM,mcc,binary,0.60988815593765755
+Random Forest,roc_auc,binary,0.8987854251012146
+Random Forest,pr_auc,binary,0.9608397467122411
+Random Forest,accuracy,binary,0.9019607843137255
+Random Forest,bal_accuracy,binary,0.8076923076923077
+Random Forest,sens,binary,1
+Random Forest,spec,binary,0.6153846153846154
+Random Forest,f_meas,binary,0.9382716049382717
+Random Forest,kap,binary,0.7045191193511009
+Random Forest,mcc,binary,0.7374471267545202
+XGBoost,roc_auc,binary,0.9008097165991904
+XGBoost,pr_auc,binary,0.9614359377082516
+XGBoost,accuracy,binary,0.8627450980392157
+XGBoost,bal_accuracy,binary,0.7560728744939271
+XGBoost,sens,binary,0.9736842105263158
+XGBoost,spec,binary,0.5384615384615384
+XGBoost,f_meas,binary,0.9135802469135803
+XGBoost,kap,binary,0.5863267670915411
+XGBoost,mcc,binary,0.6137306679897816
