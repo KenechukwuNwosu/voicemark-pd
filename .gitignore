@@ -1,0 +1,42 @@
+# ============================================================
+# VoiceMark PD
+# R / Machine Learning Project
+# ============================================================
+
+# R session and workspace files
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+
+# R package/library artifacts
+renv/library/
+renv/staging/
+packrat/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*~
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+
+# IDE/editor files
+.vscode/
+.idea/
+
+# Private or local-only data
+data/raw/
+data/private/
+data/restricted/
+
+# Model/cache artifacts
+cache/
+*.rds
+*.RDS
+
+# Logs
+*.log
