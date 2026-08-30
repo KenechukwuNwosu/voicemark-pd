@@ -233,13 +233,17 @@ voicemark-pd/
 
 The project uses an RStudio project root together with the `here` package so that data, figures, and tables are referenced using project-relative paths rather than machine-specific absolute directories.
 
+The definitive analysis uses random seed 2026, 5-fold participant-grouped cross-validation repeated five times, participant-level probability aggregation, machine-readable CSV exports, and session information recorded at the end of the rendered R Markdown report.
+
 To reproduce the analysis:
 
 1. Clone the repository.
 2. Open `VoiceMark-PD.Rproj` in RStudio.
-3. Ensure the required R packages are installed.
+3. Install the packages listed in the analysis and review the recorded session information in the HTML report.
 4. Open `code/VoiceMark_PD_Analysis.Rmd`.
-5. Run or knit the analysis from the project root.
+5. Confirm that `FAST_MODE = FALSE` for the definitive analysis.
+6. Run or knit the analysis from the project root.
+7. Compare the regenerated figures and CSV tables with the public outputs in `figures/` and `tables/`.
 
 The source dataset is stored in:
 
