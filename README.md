@@ -226,6 +226,7 @@ voicemark-pd/
     ├── 05_final_test_metrics.csv
     ├── 06_subject_predictions.csv
     └── 07_dalex_feature_importance.csv
+```
 
 ---
 
@@ -293,4 +294,4 @@ The project combines predictive modeling with rigorous validation design, reprod
 
 **Kenechukwu O. S. Nwosu**
 
-Research interests include epidemiology, real-world evidence, health outcomes research, clinical research, biomedical data science, and applied machine learning.
+Epidemiology • Biomedical Machine Learning • Model Validation • Real-World Evidence • Health Outcomes Research
