@@ -2,11 +2,17 @@
 
 ## Leakage-Aware Machine Learning for Parkinson's Classification from Acoustic Voice Biomarkers
 
-VoiceMark PD is a reproducible machine-learning project evaluating whether acoustic voice features can distinguish participants with Parkinson's disease from healthy controls while explicitly addressing a major methodological risk in repeated-measures data: **participant-level information leakage**.
+## 30-Second Summary
 
-The analysis uses repeated voice recordings from **252 participants**, producing **756 recordings** with approximately **753 acoustic predictors**. Because each participant contributes multiple recordings, conventional recording-level data splitting can place recordings from the same person in both training and validation sets, creating artificially optimistic performance estimates.
+| Element                      | Summary                                                                                                                                                                                        |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Problem**                  | Repeated recordings from the same participant can cross conventional resampling partitions and inflate apparent biomedical machine-learning performance.                                       |
+| **Data**                     | 252 participants, 756 sustained-vowel recordings, three recordings per participant, and approximately 753 acoustic predictors.                                                                 |
+| **Methods**                  | Participant-grouped train/test splitting, repeated grouped cross-validation, six-model comparison, participant-level probability aggregation, held-out evaluation, and permutation importance. |
+| **Principal Result**         | Radial-SVM ROC-AUC increased from 0.806 under participant-grouped validation to 0.906 under naive recording-level validation, demonstrating 0.100 absolute apparent AUC inflation.             |
+| **Methodological Relevance** | Shows why validation must preserve participant independence when repeated clinical or biomarker measurements are used to generate predictive evidence.                                         |
 
-This project therefore uses **participant-grouped data splitting and grouped cross-validation** so that all recordings from a participant remain within the same resampling partition.
+**[Review the complete R Markdown analysis](code/VoiceMark_PD_Analysis.Rmd)** • **[Open the complete HTML report](docs/VoiceMark_PD_Analysis.html)**
 
 ---
 
