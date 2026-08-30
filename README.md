@@ -12,7 +12,7 @@
 | **Principal Result**         | Radial-SVM ROC-AUC increased from 0.806 under participant-grouped validation to 0.906 under naive recording-level validation, demonstrating 0.100 absolute apparent AUC inflation.             |
 | **Methodological Relevance** | Shows why validation must preserve participant independence when repeated clinical or biomarker measurements are used to generate predictive evidence.                                         |
 
-**[Review the complete R Markdown analysis](code/VoiceMark_PD_Analysis.Rmd)** • **[Open the complete HTML report](docs/VoiceMark_PD_Analysis.html)**
+**[Review the complete R Markdown analysis](code/VoiceMark_PD_Analysis.Rmd)** • **[Download the complete HTML report](docs/VoiceMark_PD_Analysis.html)**
 
 ---
 
