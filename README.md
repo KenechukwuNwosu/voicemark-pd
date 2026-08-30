@@ -281,6 +281,6 @@ The project combines predictive modeling with rigorous validation design, reprod
 
 ## Author
 
-**Kenechukwu Nwosu**
+**Kenechukwu O. S. Nwosu**
 
 Research interests include epidemiology, real-world evidence, health outcomes research, clinical research, biomedical data science, and applied machine learning.
